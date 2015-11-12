@@ -48,11 +48,11 @@ class ClockFactory {
     private static final String USE_NATIVE_CLOCK_SYSTEM_PROPERTY = "com.datastax.driver.USE_NATIVE_CLOCK";
 
     static Clock newInstance() {
-        if (Native.isLibCLoaded() && SystemProperties.getBoolean(USE_NATIVE_CLOCK_SYSTEM_PROPERTY, true)) {
-            LOGGER.info("Using native clock to generate timestamps.");
+        if (Native.isGettimeofdayAvailable() && SystemProperties.getBoolean(USE_NATIVE_CLOCK_SYSTEM_PROPERTY, true)) {
+            LOGGER.debug("Using Native clock to generate timestamps (microsecond precision).");
             return new NativeClock();
         } else {
-            LOGGER.info("Using java.lang.System clock to generate timestamps.");
+            LOGGER.debug("Using System clock to generate timestamps (millisecond precision).");
             return new SystemClock();
         }
     }

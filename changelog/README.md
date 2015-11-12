@@ -25,6 +25,7 @@
 - [bug] JAVA-1100: Exception when connecting with shaded java driver in OSGI
 - [bug] JAVA-819: Expose more errors in RetryPolicy + provide idempotent-aware wrapper.
 - [bug] JAVA-727: Monotonic Timestamp generators should not provide the same timestamp more than once.
+- [improvement] JAVA-444: Add Java process information to UUIDs.makeNode() hash.
 
 Merged from 2.0 branch:
 
