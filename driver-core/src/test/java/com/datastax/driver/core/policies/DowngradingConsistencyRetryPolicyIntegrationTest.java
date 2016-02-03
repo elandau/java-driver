@@ -40,10 +40,9 @@ import static org.mockito.Mockito.times;
         numberOfNodes = 3,
         config = {
                 // tests fail often with write or read timeouts
-                "hinted_handoff_enabled:true",
                 "phi_convict_threshold:5",
-                "read_request_timeout_in_ms:100000",
-                "write_request_timeout_in_ms:100000"
+                "read_request_timeout_in_ms:200000",
+                "write_request_timeout_in_ms:200000"
         }
 )
 public class DowngradingConsistencyRetryPolicyIntegrationTest extends CCMTestsSupport {
@@ -53,7 +52,7 @@ public class DowngradingConsistencyRetryPolicyIntegrationTest extends CCMTestsSu
         Cluster cluster = register(Cluster.builder()
                 .addContactPoints(getContactPoints().get(0))
                 .withPort(ccm().getBinaryPort())
-                .withSocketOptions(new SocketOptions().setReadTimeoutMillis(120000))
+                .withSocketOptions(new SocketOptions().setReadTimeoutMillis(300000))
                 .withRetryPolicy(Mockito.spy(DowngradingConsistencyRetryPolicy.INSTANCE))
                 .build());
         Session session = cluster.connect();
