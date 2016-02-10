@@ -31,6 +31,7 @@
 - [bug] JAVA-1089: Set LWT made from BuiltStatements to non-idempotent.
 - [improvement] JAVA-923: Position idempotent flag on object mapper queries.
 - [new feature] JAVA-982: Introduce new method ConsistencyLevel.isSerial().
+- [bug] JAVA-764: Retry with the normal consistency level (not the serial one) when a write times out on the Paxos phase.
 
 Merged from 2.0 branch:
 
