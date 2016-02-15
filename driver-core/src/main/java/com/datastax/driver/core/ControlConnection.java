@@ -597,8 +597,12 @@ class ControlConnection implements Host.StateListener, Connection.Owner {
 
         for (Row row : peersFuture.get()) {
             InetSocketAddress addr = addressToUseForPeerHost(row, connection.address, cluster, logMissingRpcAddresses);
-            if (addr == null)
+            if (!isValidPeer(row, addr)) {
+                logger.warn("Found host in the system.peers table having bad values : {}. " +
+                        "This is likely to be a gossip or snitch issue in the server. " +
+                        "This host will be ignored by the driver.", row);
                 continue;
+            }
 
             foundHosts.add(addr);
             dcs.add(row.getString("data_center"));
@@ -645,6 +649,19 @@ class ControlConnection implements Host.StateListener, Connection.Owner {
 
         if (metadataEnabled)
             cluster.metadata.rebuildTokenMap(partitioner, tokenMap);
+    }
+
+    private static boolean isValidPeer(Row peerRow, InetSocketAddress addr) {
+        return peerRow.getColumnDefinitions().contains("host_id")
+                && peerRow.getColumnDefinitions().contains("rack")
+                && peerRow.getColumnDefinitions().contains("tokens")
+                && addr != null
+                && peerRow.getUUID("host_id") != null
+                && peerRow.getString("rack") != null
+                && peerRow.getSet("tokens", String.class) != null
+                && peerRow.getSet("tokens", String.class).size() > 0
+                ;
+
     }
 
     boolean waitForSchemaAgreement() throws ConnectionException, BusyConnectionException, ExecutionException, InterruptedException {
