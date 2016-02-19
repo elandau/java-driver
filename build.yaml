@@ -1,6 +1,4 @@
 java:
-  - openjdk6
-  - oraclejdk7
   - oraclejdk8
 os:
   - ubuntu/trusty64
