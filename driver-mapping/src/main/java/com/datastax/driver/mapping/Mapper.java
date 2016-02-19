@@ -23,15 +23,16 @@ import com.datastax.driver.mapping.Mapper.Option.SaveNullFields;
 import com.datastax.driver.mapping.annotations.Accessor;
 import com.datastax.driver.mapping.annotations.Computed;
 import com.google.common.base.Function;
-import com.google.common.base.Functions;
 import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
 
 import static com.datastax.driver.mapping.Mapper.Option.Type.SAVE_NULL_FIELDS;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -53,9 +54,7 @@ public class Mapper<T> {
     final TableMetadata tableMetadata;
 
     // Cache prepared statements for each type of query we use.
-    private volatile Map<MapperQueryKey, PreparedStatement> preparedQueries = Collections.emptyMap();
-
-    private static final Function<Object, Void> NOOP = Functions.constant(null);
+    private final ConcurrentMap<MapperQueryKey, PreparedStatement> preparedQueries = new ConcurrentHashMap<MapperQueryKey, PreparedStatement>();
 
     private volatile EnumMap<Option.Type, Option> defaultSaveOptions;
     private volatile EnumMap<Option.Type, Option> defaultGetOptions;
@@ -104,29 +103,37 @@ public class Mapper<T> {
         return manager.getSession();
     }
 
-    PreparedStatement getPreparedQuery(QueryType type, Set<ColumnMapper<?>> columns, EnumMap<Option.Type, Option> options) {
+    ListenableFuture<PreparedStatement> getPreparedQueryAsync(QueryType type, Set<ColumnMapper<?>> columns, EnumMap<Option.Type, Option> options) {
 
-        MapperQueryKey pqk = new MapperQueryKey(type, columns, options);
-
+        final MapperQueryKey pqk = new MapperQueryKey(type, columns, options);
         PreparedStatement stmt = preparedQueries.get(pqk);
         if (stmt == null) {
-            synchronized (preparedQueries) {
-                stmt = preparedQueries.get(pqk);
-                if (stmt == null) {
-                    String queryString = type.makePreparedQueryString(tableMetadata, mapper, manager, columns, options.values());
-                    logger.debug("Preparing query {}", queryString);
-                    stmt = session().prepare(queryString);
-                    Map<MapperQueryKey, PreparedStatement> newQueries = new HashMap<MapperQueryKey, PreparedStatement>(preparedQueries);
-                    newQueries.put(pqk, stmt);
-                    preparedQueries = newQueries;
+            String queryString = type.makePreparedQueryString(tableMetadata, mapper, manager, columns, options.values());
+            logger.debug("Preparing query {}", queryString);
+            final SettableFuture<PreparedStatement> future = SettableFuture.create();
+            Futures.addCallback(session().prepareAsync(queryString), new FutureCallback<PreparedStatement>() {
+
+                @Override
+                public void onSuccess(PreparedStatement stmt) {
+                    PreparedStatement old = preparedQueries.putIfAbsent(pqk, stmt);
+                    if (old != null)
+                        stmt = old;
+                    future.set(stmt);
                 }
-            }
+
+                @Override
+                public void onFailure(Throwable t) {
+                    future.setException(t);
+                }
+            });
+            return future;
+        } else {
+            return Futures.immediateFuture(stmt);
         }
-        return stmt;
     }
 
-    PreparedStatement getPreparedQuery(QueryType type, EnumMap<Option.Type, Option> options) {
-        return getPreparedQuery(type, Collections.<ColumnMapper<?>>emptySet(), options);
+    ListenableFuture<PreparedStatement> getPreparedQueryAsync(QueryType type, EnumMap<Option.Type, Option> options) {
+        return getPreparedQueryAsync(type, Collections.<ColumnMapper<?>>emptySet(), options);
     }
 
     /**
@@ -160,7 +167,11 @@ public class Mapper<T> {
      * @return a query that saves {@code entity} (based on it's defined mapping).
      */
     public Statement saveQuery(T entity) {
-        return saveQuery(entity, this.defaultSaveOptions);
+        try {
+            return Uninterruptibles.getUninterruptibly(saveQueryAsync(entity, this.defaultSaveOptions));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
+        }
     }
 
     /**
@@ -184,11 +195,15 @@ public class Mapper<T> {
      * @return a query that saves {@code entity} (based on it's defined mapping).
      */
     public Statement saveQuery(T entity, Option... options) {
-        return saveQuery(entity, toMapWithDefaults(options, this.defaultSaveOptions));
+        try {
+            return Uninterruptibles.getUninterruptibly(saveQueryAsync(entity, toMapWithDefaults(options, this.defaultSaveOptions)));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
+        }
     }
 
-    private Statement saveQuery(T entity, EnumMap<Option.Type, Option> options) {
-        Map<ColumnMapper<?>, Object> values = new HashMap<ColumnMapper<?>, Object>();
+    private ListenableFuture<BoundStatement> saveQueryAsync(T entity, final EnumMap<Option.Type, Option> options) {
+        final Map<ColumnMapper<?>, Object> values = new HashMap<ColumnMapper<?>, Object>();
         boolean saveNullFields = shouldSaveNullFields(options);
 
         for (ColumnMapper<T> cm : mapper.allColumns()) {
@@ -198,23 +213,28 @@ public class Mapper<T> {
             }
         }
 
-        BoundStatement bs = getPreparedQuery(QueryType.SAVE, values.keySet(), options).bind();
-        int i = 0;
-        for (Map.Entry<ColumnMapper<?>, Object> entry : values.entrySet()) {
-            DataType type = entry.getKey().getDataType();
-            Object value = entry.getValue();
-            bs.setBytesUnsafe(i++, value == null ? null : type.serialize(value, protocolVersion));
-        }
+        return Futures.transform(getPreparedQueryAsync(QueryType.SAVE, values.keySet(), options), new Function<PreparedStatement, BoundStatement>() {
+            @Override
+            public BoundStatement apply(PreparedStatement input) {
+                BoundStatement bs = input.bind();
+                int i = 0;
+                for (Map.Entry<ColumnMapper<?>, Object> entry : values.entrySet()) {
+                    DataType type = entry.getKey().getDataType();
+                    Object value = entry.getValue();
+                    bs.setBytesUnsafe(i++, value == null ? null : type.serialize(value, protocolVersion));
+                }
 
-        if (mapper.writeConsistency != null)
-            bs.setConsistencyLevel(mapper.writeConsistency);
+                if (mapper.writeConsistency != null)
+                    bs.setConsistencyLevel(mapper.writeConsistency);
 
-        for (Option opt : options.values()) {
-            opt.checkValidFor(QueryType.SAVE, manager);
-            opt.addToPreparedStatement(bs, i++);
-        }
+                for (Option opt : options.values()) {
+                    opt.checkValidFor(QueryType.SAVE, manager);
+                    opt.addToPreparedStatement(bs, i++);
+                }
 
-        return bs;
+                return bs;
+            }
+        });
     }
 
     private static boolean shouldSaveNullFields(EnumMap<Option.Type, Option> options) {
@@ -223,18 +243,22 @@ public class Mapper<T> {
     }
 
     /**
-     * Save an entity mapped by this mapper.
+     * Saves an entity mapped by this mapper.
      * <p/>
      * This method is basically equivalent to: {@code getManager().getSession().execute(saveQuery(entity))}.
      *
      * @param entity the entity to save.
      */
     public void save(T entity) {
-        session().execute(saveQuery(entity));
+        try {
+            Uninterruptibles.getUninterruptibly(saveAsync(entity));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
+        }
     }
 
     /**
-     * Save an entity mapped by this mapper and using special options for save.
+     * Saves an entity mapped by this mapper and using special options for save.
      * This method allows you to provide a suite of {@link Option} to include in
      * the SAVE query. Options currently supported for SAVE are :
      * <ul>
@@ -248,11 +272,15 @@ public class Mapper<T> {
      * @param options the options object specified defining special options when saving.
      */
     public void save(T entity, Option... options) {
-        session().execute(saveQuery(entity, options));
+        try {
+            Uninterruptibles.getUninterruptibly(saveAsync(entity, options));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
+        }
     }
 
     /**
-     * Save an entity mapped by this mapper asynchronously.
+     * Saves an entity mapped by this mapper asynchronously.
      * <p/>
      * This method is basically equivalent to: {@code getManager().getSession().executeAsync(saveQuery(entity))}.
      *
@@ -260,7 +288,7 @@ public class Mapper<T> {
      * @return a future on the completion of the save operation.
      */
     public ListenableFuture<Void> saveAsync(T entity) {
-        return Futures.transform(session().executeAsync(saveQuery(entity)), NOOP);
+        return submitSaveAsync(saveQueryAsync(entity, this.defaultSaveOptions));
     }
 
     /**
@@ -273,7 +301,33 @@ public class Mapper<T> {
      * @return a future on the completion of the save operation.
      */
     public ListenableFuture<Void> saveAsync(T entity, Option... options) {
-        return Futures.transform(session().executeAsync(saveQuery(entity, options)), NOOP);
+        return submitSaveAsync(saveQueryAsync(entity, toMapWithDefaults(options, this.defaultSaveOptions)));
+    }
+
+    private ListenableFuture<Void> submitSaveAsync(ListenableFuture<BoundStatement> bsFuture) {
+        final SettableFuture<Void> future = SettableFuture.create();
+        Futures.addCallback(bsFuture, new FutureCallback<BoundStatement>() {
+            @Override
+            public void onSuccess(BoundStatement result) {
+                Futures.addCallback(session().executeAsync(result), new FutureCallback<ResultSet>() {
+                    @Override
+                    public void onSuccess(ResultSet result) {
+                        future.set(null);
+                    }
+
+                    @Override
+                    public void onFailure(Throwable t) {
+                        future.setException(t);
+                    }
+                });
+            }
+
+            @Override
+            public void onFailure(Throwable t) {
+                future.setException(t);
+            }
+        });
+        return future;
     }
 
     /**
@@ -302,10 +356,17 @@ public class Mapper<T> {
      *                                  at least one of those values is {@code null}.
      */
     public Statement getQuery(Object... objects) {
+        try {
+            return Uninterruptibles.getUninterruptibly(getQueryAsync(objects));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
+        }
+    }
+
+    private ListenableFuture<BoundStatement> getQueryAsync(Object... objects) {
         // Order and duplicates matter for primary keys
         List<Object> pks = new ArrayList<Object>();
         EnumMap<Option.Type, Option> options = new EnumMap<Option.Type, Option>(defaultGetOptions);
-
         for (Object o : objects) {
             if (o instanceof Option) {
                 Option option = (Option) o;
@@ -314,35 +375,38 @@ public class Mapper<T> {
                 pks.add(o);
             }
         }
-        return getQuery(pks, options);
+        return getQueryAsync(pks, options);
     }
 
-    private Statement getQuery(List<Object> primaryKeys, EnumMap<Option.Type, Option> options) {
-
+    private ListenableFuture<BoundStatement> getQueryAsync(final List<Object> primaryKeys, final EnumMap<Option.Type, Option> options) {
         if (primaryKeys.size() != mapper.primaryKeySize())
             throw new IllegalArgumentException(String.format("Invalid number of PRIMARY KEY columns provided, %d expected but got %d", mapper.primaryKeySize(), primaryKeys.size()));
 
-        BoundStatement bs = getPreparedQuery(QueryType.GET, options).bind();
-        int i = 0;
-        for (Object value : primaryKeys) {
-            ColumnMapper<T> column = mapper.getPrimaryKeyColumn(i);
-            if (value == null) {
-                throw new IllegalArgumentException(String.format("Invalid null value for PRIMARY KEY column %s (argument %d)", column.getColumnName(), i));
+        return Futures.transform(getPreparedQueryAsync(QueryType.GET, options), new Function<PreparedStatement, BoundStatement>() {
+            @Override
+            public BoundStatement apply(PreparedStatement input) {
+                BoundStatement bs = input.bind();
+                int i = 0;
+                for (Object value : primaryKeys) {
+                    ColumnMapper<T> column = mapper.getPrimaryKeyColumn(i);
+                    if (value == null) {
+                        throw new IllegalArgumentException(String.format("Invalid null value for PRIMARY KEY column %s (argument %d)", column.getColumnName(), i));
+                    }
+                    bs.setBytesUnsafe(i++, column.getDataType().serialize(value, protocolVersion));
+                }
+
+                if (mapper.readConsistency != null)
+                    bs.setConsistencyLevel(mapper.readConsistency);
+
+                for (Option opt : options.values()) {
+                    opt.checkValidFor(QueryType.GET, manager);
+                    opt.addToPreparedStatement(bs, i);
+                    if (opt.isIncludedInQuery())
+                        i++;
+                }
+                return bs;
             }
-            bs.setBytesUnsafe(i++, column.getDataType().serialize(value, protocolVersion));
-        }
-
-        if (mapper.readConsistency != null)
-            bs.setConsistencyLevel(mapper.readConsistency);
-
-        for (Option opt : options.values()) {
-            opt.checkValidFor(QueryType.GET, manager);
-            opt.addToPreparedStatement(bs, i);
-            if (opt.isIncludedInQuery())
-                i++;
-        }
-
-        return bs;
+        });
     }
 
     /**
@@ -359,7 +423,11 @@ public class Mapper<T> {
      *                                  at least one of those values is {@code null}.
      */
     public T get(Object... objects) {
-        return mapAliased(session().execute(getQuery(objects))).one();
+        try {
+            return Uninterruptibles.getUninterruptibly(getAsync(objects));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
+        }
     }
 
     /**
@@ -376,8 +444,30 @@ public class Mapper<T> {
      *                                  the number of columns composing the PRIMARY KEY of the mapped class, or if
      *                                  at least one of those values is {@code null}.
      */
-    public ListenableFuture<T> getAsync(Object... objects) {
-        return Futures.transform(session().executeAsync(getQuery(objects)), mapOneFunction);
+    public ListenableFuture<T> getAsync(final Object... objects) {
+        final SettableFuture<T> future = SettableFuture.create();
+        Futures.addCallback(getQueryAsync(objects), new FutureCallback<BoundStatement>() {
+            @Override
+            public void onSuccess(BoundStatement result) {
+                Futures.addCallback(Futures.transform(session().executeAsync(result), mapOneFunction), new FutureCallback<T>() {
+                    @Override
+                    public void onSuccess(T result) {
+                        future.set(result);
+                    }
+
+                    @Override
+                    public void onFailure(Throwable t) {
+                        future.setException(t);
+                    }
+                });
+            }
+
+            @Override
+            public void onFailure(Throwable t) {
+                future.setException(t);
+            }
+        });
+        return future;
     }
 
     /**
@@ -409,12 +499,11 @@ public class Mapper<T> {
      * provided USING options.
      */
     public Statement deleteQuery(T entity, Option... options) {
-        List<Object> pks = new ArrayList<Object>();
-        for (int i = 0; i < mapper.primaryKeySize(); i++) {
-            pks.add(mapper.getPrimaryKeyColumn(i).getValue(entity));
+        try {
+            return Uninterruptibles.getUninterruptibly(deleteQueryAsync(entity, toMapWithDefaults(options, defaultDeleteOptions)));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
         }
-
-        return deleteQuery(pks, toMapWithDefaults(options, defaultDeleteOptions));
     }
 
     /**
@@ -433,12 +522,11 @@ public class Mapper<T> {
      * @return a query that delete {@code entity} (based on it's defined mapping).
      */
     public Statement deleteQuery(T entity) {
-        List<Object> pks = new ArrayList<Object>();
-        for (int i = 0; i < mapper.primaryKeySize(); i++) {
-            pks.add(mapper.getPrimaryKeyColumn(i).getValue(entity));
+        try {
+            return Uninterruptibles.getUninterruptibly(deleteQueryAsync(entity, defaultDeleteOptions));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
         }
-
-        return deleteQuery(pks, defaultDeleteOptions);
     }
 
     /**
@@ -473,10 +561,25 @@ public class Mapper<T> {
      *                                  at least one of those values is {@code null}.
      */
     public Statement deleteQuery(Object... objects) {
+        try {
+            return Uninterruptibles.getUninterruptibly(deleteQueryAsync(objects));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
+        }
+    }
+
+    private ListenableFuture<BoundStatement> deleteQueryAsync(T entity, EnumMap<Option.Type, Option> options) {
+        List<Object> pks = new ArrayList<Object>();
+        for (int i = 0; i < mapper.primaryKeySize(); i++) {
+            pks.add(mapper.getPrimaryKeyColumn(i).getValue(entity));
+        }
+        return deleteQueryAsync(pks, options);
+    }
+
+    private ListenableFuture<BoundStatement> deleteQueryAsync(Object... objects) {
         // Order and duplicates matter for primary keys
         List<Object> pks = new ArrayList<Object>();
         EnumMap<Option.Type, Option> options = new EnumMap<Option.Type, Option>(defaultDeleteOptions);
-
         for (Object o : objects) {
             if (o instanceof Option) {
                 Option option = (Option) o;
@@ -485,36 +588,40 @@ public class Mapper<T> {
                 pks.add(o);
             }
         }
-        return deleteQuery(pks, options);
+        return deleteQueryAsync(pks, options);
     }
 
-    private Statement deleteQuery(List<Object> primaryKey, EnumMap<Option.Type, Option> options) {
+    private ListenableFuture<BoundStatement> deleteQueryAsync(final List<Object> primaryKey, final EnumMap<Option.Type, Option> options) {
         if (primaryKey.size() != mapper.primaryKeySize())
             throw new IllegalArgumentException(String.format("Invalid number of PRIMARY KEY columns provided, %d expected but got %d", mapper.primaryKeySize(), primaryKey.size()));
 
-        BoundStatement bs = getPreparedQuery(QueryType.DEL, options).bind();
+        return Futures.transform(getPreparedQueryAsync(QueryType.DEL, options), new Function<PreparedStatement, BoundStatement>() {
+            @Override
+            public BoundStatement apply(PreparedStatement input) {
+                BoundStatement bs = input.bind();
+                if (mapper.writeConsistency != null)
+                    bs.setConsistencyLevel(mapper.writeConsistency);
 
-        if (mapper.writeConsistency != null)
-            bs.setConsistencyLevel(mapper.writeConsistency);
+                int i = 0;
+                for (Option opt : options.values()) {
+                    opt.checkValidFor(QueryType.DEL, manager);
+                    opt.addToPreparedStatement(bs, i);
+                    if (opt.isIncludedInQuery())
+                        i++;
+                }
 
-        int i = 0;
-        for (Option opt : options.values()) {
-            opt.checkValidFor(QueryType.DEL, manager);
-            opt.addToPreparedStatement(bs, i);
-            if (opt.isIncludedInQuery())
-                i++;
-        }
-
-        int columnNumber = 0;
-        for (Object value : primaryKey) {
-            ColumnMapper<T> column = mapper.getPrimaryKeyColumn(columnNumber);
-            if (value == null) {
-                throw new IllegalArgumentException(String.format("Invalid null value for PRIMARY KEY column %s (argument %d)", column.getColumnName(), i));
+                int columnNumber = 0;
+                for (Object value : primaryKey) {
+                    ColumnMapper<T> column = mapper.getPrimaryKeyColumn(columnNumber);
+                    if (value == null) {
+                        throw new IllegalArgumentException(String.format("Invalid null value for PRIMARY KEY column %s (argument %d)", column.getColumnName(), i));
+                    }
+                    bs.setBytesUnsafe(i++, column.getDataType().serialize(value, protocolVersion));
+                    columnNumber++;
+                }
+                return bs;
             }
-            bs.setBytesUnsafe(i++, column.getDataType().serialize(value, protocolVersion));
-            columnNumber++;
-        }
-        return bs;
+        });
     }
 
     /**
@@ -525,7 +632,11 @@ public class Mapper<T> {
      * @param entity the entity to delete.
      */
     public void delete(T entity) {
-        session().execute(deleteQuery(entity));
+        try {
+            Uninterruptibles.getUninterruptibly(deleteAsync(entity));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
+        }
     }
 
     /**
@@ -537,7 +648,11 @@ public class Mapper<T> {
      * @param options the options to add to the DELETE query.
      */
     public void delete(T entity, Option... options) {
-        session().execute(deleteQuery(entity, options));
+        try {
+            Uninterruptibles.getUninterruptibly(deleteAsync(entity, options));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
+        }
     }
 
     /**
@@ -549,7 +664,7 @@ public class Mapper<T> {
      * @return a future on the completion of the deletion.
      */
     public ListenableFuture<Void> deleteAsync(T entity) {
-        return Futures.transform(session().executeAsync(deleteQuery(entity)), NOOP);
+        return submitDeleteAsync(deleteQueryAsync(entity, defaultDeleteOptions));
     }
 
     /**
@@ -562,7 +677,7 @@ public class Mapper<T> {
      * @return a future on the completion of the deletion.
      */
     public ListenableFuture<Void> deleteAsync(T entity, Option... options) {
-        return Futures.transform(session().executeAsync(deleteQuery(entity, options)), NOOP);
+        return submitDeleteAsync(deleteQueryAsync(entity, toMapWithDefaults(options, defaultDeleteOptions)));
     }
 
     /**
@@ -579,7 +694,11 @@ public class Mapper<T> {
      *                                  at least one of those values is {@code null}.
      */
     public void delete(Object... objects) {
-        session().execute(deleteQuery(objects));
+        try {
+            Uninterruptibles.getUninterruptibly(deleteAsync(objects));
+        } catch (ExecutionException e) {
+            throw DriverThrowables.propagateCause(e);
+        }
     }
 
     /**
@@ -596,10 +715,40 @@ public class Mapper<T> {
      *                                  at least one of those values is {@code null}.
      */
     public ListenableFuture<Void> deleteAsync(Object... objects) {
-        return Futures.transform(session().executeAsync(deleteQuery(objects)), NOOP);
+        return submitDeleteAsync(deleteQueryAsync(objects));
+    }
+
+    private ListenableFuture<Void> submitDeleteAsync(ListenableFuture<BoundStatement> bsFuture) {
+        final SettableFuture<Void> future = SettableFuture.create();
+        Futures.addCallback(bsFuture, new FutureCallback<BoundStatement>() {
+            @Override
+            public void onSuccess(BoundStatement result) {
+                Futures.addCallback(session().executeAsync(result), new FutureCallback<ResultSet>() {
+                    @Override
+                    public void onSuccess(ResultSet result) {
+                        future.set(null);
+                    }
+
+                    @Override
+                    public void onFailure(Throwable t) {
+                        future.setException(t);
+                    }
+                });
+            }
+
+            @Override
+            public void onFailure(Throwable t) {
+                future.setException(t);
+            }
+        });
+        return future;
     }
 
     /**
+     * Creates a query to fetch entity given its PRIMARY KEY.
+     * <p/>
+
+     /**
      * Maps the rows from a {@code ResultSet} into the class this is a mapper of.
      * <p/>
      * Use this method to map a result set that was not generated by the mapper (e.g. a result set coming from a
