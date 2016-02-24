@@ -457,12 +457,10 @@ class Connection {
                     Connection.this.keyspace = ((SetKeyspace) response).keyspace;
                     return MoreFutures.VOID_SUCCESS;
                 } else if (response.type == ERROR) {
-                    closeAsync().force();
                     Responses.Error error = (Responses.Error) response;
-                    throw error.asException(address);
+                    throw defunct(error.asException(address));
                 } else {
-                    closeAsync().force();
-                    throw new DriverInternalError("Unexpected response while setting keyspace: " + response);
+                    throw defunct(new DriverInternalError("Unexpected response while setting keyspace: " + response));
                 }
             }
         }, factory.manager.configuration.getPoolingOptions().getInitializationExecutor());
