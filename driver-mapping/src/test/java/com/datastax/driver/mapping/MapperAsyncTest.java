@@ -55,6 +55,14 @@ public class MapperAsyncTest extends CCMTestsSupport {
         );
     }
 
+    /**
+     * Validates that when using save, get and deleteAsync using the same executor as the caller that the driver
+     * does not block indefinitely in a netty worker thread.
+     *
+     * @jira_ticket JAVA-1070
+     * @test_category queries:async
+     * @test_category object_mapper
+     */
     @Test(groups = "short")
     public void should_get_query_async_without_blocking() {
 
@@ -101,7 +109,6 @@ public class MapperAsyncTest extends CCMTestsSupport {
                                     }
                                 });
                             }
-
                         });
                     }
                 });
