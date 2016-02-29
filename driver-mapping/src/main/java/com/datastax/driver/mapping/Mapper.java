@@ -54,7 +54,7 @@ public class Mapper<T> {
     final TableMetadata tableMetadata;
 
     // Cache prepared statements for each type of query we use.
-    private final ConcurrentMap<MapperQueryKey, PreparedStatement> preparedQueries = new ConcurrentHashMap<MapperQueryKey, PreparedStatement>();
+    private final ConcurrentMap<MapperQueryKey, ListenableFuture<PreparedStatement>> preparedQueries = new ConcurrentHashMap<MapperQueryKey, ListenableFuture<PreparedStatement>>();
 
     private volatile EnumMap<Option.Type, Option> defaultSaveOptions;
     private volatile EnumMap<Option.Type, Option> defaultGetOptions;
@@ -106,29 +106,31 @@ public class Mapper<T> {
     ListenableFuture<PreparedStatement> getPreparedQueryAsync(QueryType type, Set<ColumnMapper<?>> columns, EnumMap<Option.Type, Option> options) {
 
         final MapperQueryKey pqk = new MapperQueryKey(type, columns, options);
-        PreparedStatement stmt = preparedQueries.get(pqk);
-        if (stmt == null) {
+        ListenableFuture<PreparedStatement> existingFuture = preparedQueries.get(pqk);
+        if (existingFuture == null) {
             String queryString = type.makePreparedQueryString(tableMetadata, mapper, manager, columns, options.values());
             logger.debug("Preparing query {}", queryString);
             final SettableFuture<PreparedStatement> future = SettableFuture.create();
-            Futures.addCallback(session().prepareAsync(queryString), new FutureCallback<PreparedStatement>() {
+            ListenableFuture<PreparedStatement> old = preparedQueries.putIfAbsent(pqk, future);
+            if (old != null) {
+                return old;
+            } else {
+                Futures.addCallback(session().prepareAsync(queryString), new FutureCallback<PreparedStatement>() {
 
-                @Override
-                public void onSuccess(PreparedStatement stmt) {
-                    PreparedStatement old = preparedQueries.putIfAbsent(pqk, stmt);
-                    if (old != null)
-                        stmt = old;
-                    future.set(stmt);
-                }
+                    @Override
+                    public void onSuccess(PreparedStatement stmt) {
+                        future.set(stmt);
+                    }
 
-                @Override
-                public void onFailure(Throwable t) {
-                    future.setException(t);
-                }
-            });
-            return future;
+                    @Override
+                    public void onFailure(Throwable t) {
+                        future.setException(t);
+                    }
+                });
+                return future;
+            }
         } else {
-            return Futures.immediateFuture(stmt);
+            return existingFuture;
         }
     }
 
