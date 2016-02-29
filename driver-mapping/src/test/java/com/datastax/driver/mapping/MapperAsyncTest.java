@@ -51,7 +51,7 @@ public class MapperAsyncTest extends CCMTestsSupport {
     public void onTestContextInitialized() {
         execute(
                 String.format(CREATE_KEYSPACE_SIMPLE_FORMAT, KEYSPACE, 1),
-                String.format("CREATE TABLE %s.users (user_id uuid PRIMARY KEY, name text, email text, year int, gender text)", KEYSPACE)
+                String.format("CREATE TABLE %s.users (user_id uuid PRIMARY KEY, name text, email text)", KEYSPACE)
         );
     }
 
@@ -124,11 +124,6 @@ public class MapperAsyncTest extends CCMTestsSupport {
 
     @Table(name = "users", keyspace = KEYSPACE)
     public static class User {
-
-        // Dummy constant to test that static fields are properly ignored
-        public static final int FOO = 1;
-
-        public enum Gender {FEMALE, MALE}
 
         @PartitionKey
         @Column(name = "user_id")
