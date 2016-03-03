@@ -20,6 +20,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.atomic.AtomicReference;
 
+import static java.util.concurrent.TimeUnit.*;
+
 /**
  * A small abstraction around system clock that aims to provide microsecond precision with the best accuracy possible.
  */
@@ -47,10 +49,10 @@ class ClockFactory {
 
     static Clock newInstance() {
         if (Native.isLibCLoaded() && SystemProperties.getBoolean(USE_NATIVE_CLOCK_SYSTEM_PROPERTY, true)) {
-            LOGGER.info("Using native clock to generate timestamps");
+            LOGGER.info("Using native clock to generate timestamps.");
             return new NativeClock();
         } else {
-            LOGGER.info("Using java.lang.System clock to generate timestamps");
+            LOGGER.info("Using java.lang.System clock to generate timestamps.");
             return new SystemClock();
         }
     }
@@ -75,85 +77,59 @@ class SystemClock implements Clock {
  * Provides the current time with microseconds precision with some reasonable accuracy through
  * the use of {@link Native#currentTimeMicros()}.
  * <p/>
- * But because calling JNR methods is slightly expensive (roughly 300 ns for {@link Native#currentTimeMicros()}),
- * we only call it once per {@code UPDATE_INTERVAL_MS}
- * and add the number of nanoseconds since the last call to get the current time, which is good
- * enough accuracy for our purpose (see CASSANDRA-6106).
+ * Because calling JNR methods is slightly expensive,
+ * we only call it once per second and add the number of nanoseconds since the last call
+ * to get the current time, which is good enough an accuracy for our purpose (see CASSANDRA-6106).
  * <p/>
- * This reduces the cost of the call to {@link NativeClock#currentTimeMicros()} to roughly 30 ns, which
- * is comparable to a call to {@link System#currentTimeMillis()}.
+ * This reduces the cost of the call to {@link NativeClock#currentTimeMicros()} to levels comparable
+ * to those of a call to {@link System#currentTimeMillis()}.
  */
 class NativeClock implements Clock {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(NativeClock.class);
-    private static final long UPDATE_INTERVAL_MS = 1000;
-    private static final TimeFetcher TIME_FETCHER = new TimeFetcher();
-
-    static {
-        Thread updater = new Thread(TIME_FETCHER, "Native Clock Fetcher");
-        updater.setDaemon(true);
-        updater.start();
-    }
+    private static final long ONE_SECOND_NS = NANOSECONDS.convert(1, SECONDS);
+    private static final long ONE_MILLISECOND_NS = NANOSECONDS.convert(1, MILLISECONDS);
 
     /**
-     * @return an approximation of the real-time in microseconds.
+     * Records a time in micros along with the System.nanoTime() value at the time the
+     * time is fetched.
      */
+    private static class FetchedTime {
+
+        private final long timeInMicros;
+        private final long nanoTimeAtCheck;
+
+        private FetchedTime(long timeInMicros, long nanoTimeAtCheck) {
+            this.timeInMicros = timeInMicros;
+            this.nanoTimeAtCheck = nanoTimeAtCheck;
+        }
+    }
+
+    private final AtomicReference<FetchedTime> lastFetchedTime = new AtomicReference<FetchedTime>(fetchTimeMicros());
+
+    @Override
     public long currentTimeMicros() {
-        return TIME_FETCHER.currentTimeMicros();
+        FetchedTime spec = lastFetchedTime.get();
+        long curNano = System.nanoTime();
+        if (curNano > spec.nanoTimeAtCheck + ONE_SECOND_NS) {
+            spec = fetchTimeMicros();
+            lastFetchedTime.set(spec);
+        }
+        return spec.timeInMicros + ((curNano - spec.nanoTimeAtCheck) / 1000);
     }
 
-    private static class TimeFetcher implements Runnable {
-
-        /**
-         * Records a time in micros along with the nanoTime() value at the time the
-         * time is fetch.
-         */
-        private static class FetchedTime {
-
-            private final long timeInMicros;
-            private final long nanoTimeAtCheck;
-
-            private FetchedTime(long timeInMicros, long nanoTimeAtCheck) {
-                this.timeInMicros = timeInMicros;
-                this.nanoTimeAtCheck = nanoTimeAtCheck;
-            }
-        }
-
-        private AtomicReference<FetchedTime> lastFetchedTime = new AtomicReference<FetchedTime>(fetchTimeMicros());
-
-        @SuppressWarnings("InfiniteLoopStatement")
-        @Override
-        public void run() {
-            while (true) {
-                try {
-                    lastFetchedTime.set(fetchTimeMicros());
-                    Thread.sleep(UPDATE_INTERVAL_MS);
-                } catch (Exception e) {
-                    LOGGER.error("Unexpected error while fetching current time", e);
-                }
-            }
-        }
-
-        long currentTimeMicros() {
-            FetchedTime spec = lastFetchedTime.get();
-            long curNano = System.nanoTime();
-            return spec.timeInMicros + ((curNano - spec.nanoTimeAtCheck) / 1000);
-        }
-
-        private FetchedTime fetchTimeMicros() {
-            // To compensate for the fact that the Native.currentTimeMicros call could take
-            // some time, instead of picking the nano time before the call or after the
-            // call, we take the average of both.
-            long start = System.nanoTime();
-            long micros = Native.currentTimeMicros();
-            long end = System.nanoTime();
-            // If it turns out the call took us more than 1 milliseconds (can happen while
-            // the JVM warms up, unlikely otherwise, but no reasons to take risks), fall back
-            // to System.currentMillis() temporarily
-            if ((end - start) > 1000000)
-                return new FetchedTime(System.currentTimeMillis() * 1000, System.nanoTime());
-            return new FetchedTime(micros, (end + start) / 2);
-        }
-
+    private static FetchedTime fetchTimeMicros() {
+        // To compensate for the fact that the Native.currentTimeMicros call could take
+        // some time, instead of picking the nano time before the call or after the
+        // call, we take the average of both.
+        long start = System.nanoTime();
+        long micros = Native.currentTimeMicros();
+        long end = System.nanoTime();
+        // If it turns out the call took us more than 1 millisecond (can happen while
+        // the JVM warms up, unlikely otherwise, but no reasons to take risks), fall back
+        // to System.currentTimeMillis() temporarily
+        if ((end - start) > ONE_MILLISECOND_NS)
+            return new FetchedTime(System.currentTimeMillis() * 1000, System.nanoTime());
+        return new FetchedTime(micros, (end + start) / 2);
     }
+
 }
