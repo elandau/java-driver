@@ -27,7 +27,7 @@ package com.datastax.driver.core;
  * The accuracy of the generated timestamps is largely dependent on the
  * granularity of the underlying operating system's clock.
  * <p/>
- * Generally speaking, this granularity is the millisecond, and
+ * Generally speaking, this granularity is millisecond, and
  * the sub-millisecond part is simply a counter that gets incremented
  * until the next clock tick, as provided by {@link System#currentTimeMillis()}.
  * <p/>
