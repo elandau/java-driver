@@ -19,6 +19,8 @@ import com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
@@ -34,7 +36,7 @@ abstract class AbstractMonotonicTimestampGenerator implements TimestampGenerator
     @VisibleForTesting
     volatile Clock clock = ClockFactory.newInstance();
 
-    private volatile long lastClockDriftWarning = Long.MIN_VALUE;
+    private AtomicLong lastClockDriftWarning = new AtomicLong(Long.MIN_VALUE);
 
     /**
      * Compute the next timestamp, given the last timestamp previously generated.
@@ -62,8 +64,8 @@ abstract class AbstractMonotonicTimestampGenerator implements TimestampGenerator
     private void maybeLogWarning(long current, long last) {
         if (LOGGER.isWarnEnabled()) {
             long now = System.nanoTime();
-            if (now > lastClockDriftWarning + CLOCK_DRIFT_WARNING_INTERVAL) {
-                lastClockDriftWarning = now;
+            long lastWarning = lastClockDriftWarning.get();
+            if (now > lastWarning + CLOCK_DRIFT_WARNING_INTERVAL && lastClockDriftWarning.compareAndSet(lastWarning, now)) {
                 if (current == last) {
                     LOGGER.warn(
                             "Clock drift detected: same timestamp was generated twice ({}), " +
