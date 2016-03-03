@@ -31,13 +31,17 @@ package com.datastax.driver.core;
  * the sub-millisecond part is simply a counter that gets incremented
  * until the next clock tick, as provided by {@link System#currentTimeMillis()}.
  * <p/>
- * On Linux systems, however, it is possible to have a better granularity by using a JNA
- * call to {@code clock_gettime}. To benefit from this system call, set the system
- * property {@code com.datastax.driver.USE_NATIVE_CLOCK} to {@code true}.
+ * On some systems, however, it is possible to have a better granularity by using a JNR
+ * call to {@code gettimeofday}. The driver will use this system call automatically whenever
+ * available, unless the system property {@code com.datastax.driver.USE_NATIVE_CLOCK} is
+ * explicitly set to {@code false}.
  * <p/>
  * Beware that to guarantee monotonicity, if more than one call to {@link #next()}
  * is made within the same microsecond, or in the event of a system clock skew, this generator might
- * return timestamps that drift out in the future.
+ * return timestamps that drift out in the future. When this happens, a warning
+ * will be logged once every second. To disable these warnings, set the
+ * {@code com.datastax.driver.core.TimestampGenerator} logger level
+ * to {@code OFF}.
  */
 public class ThreadLocalMonotonicTimestampGenerator extends AbstractMonotonicTimestampGenerator {
 

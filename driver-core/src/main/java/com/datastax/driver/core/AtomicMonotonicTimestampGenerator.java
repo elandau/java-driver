@@ -34,7 +34,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p/>
  * Beware that to guarantee monotonicity, if more than one call to {@link #next()}
  * is made within the same microsecond, or in the event of a system clock skew, this generator might
- * return timestamps that drift out in the future.
+ * return timestamps that drift out in the future. When this happens, a warning
+ * will be logged once every second. To disable these warnings, set the
+ * {@code com.datastax.driver.core.TimestampGenerator} logger level
+ * to {@code OFF}.
  */
 public class AtomicMonotonicTimestampGenerator extends AbstractMonotonicTimestampGenerator {
 
