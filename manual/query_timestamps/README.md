@@ -78,7 +78,7 @@ Both implementations strive to achieve microsecond resolution on a best-effort b
 But in practice, the real accuracy of generated timestamps is largely dependent on the
 granularity of the underlying operating system's clock.
 
-For most systems, this minimum granularity is the millisecond, and 
+For most systems, this minimum granularity is millisecond, and 
 the sub-millisecond part of generated timestamps is simply a counter that gets incremented
 until the next clock tick, as provided by `System.currentTimeMillis()`.
 
@@ -109,7 +109,11 @@ happen under the same millisecond.
 
 Note that to guarantee such monotonicity, if more than one timestamp is generated
 within the same microsecond, or in the event of a system clock skew, _both implementations might
-return timestamps that drift out in the future_.
+return timestamps that drift out in the future_. 
+
+When this happens, the driver will log a warning message once every second. 
+To disable these warnings, set the `com.datastax.driver.core.TimestampGenerator` logger level
+to `OFF`.
  
 ### Summary
 
