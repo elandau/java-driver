@@ -111,8 +111,7 @@ class NativeClock implements Clock {
         FetchedTime spec = lastFetchedTime.get();
         long curNano = System.nanoTime();
         if (curNano > spec.nanoTimeAtCheck + ONE_SECOND_NS) {
-            spec = fetchTimeMicros();
-            lastFetchedTime.set(spec);
+            lastFetchedTime.compareAndSet(spec, spec = fetchTimeMicros());
         }
         return spec.timeInMicros + ((curNano - spec.nanoTimeAtCheck) / 1000);
     }
