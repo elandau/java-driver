@@ -23,6 +23,7 @@ import com.datastax.driver.mapping.Mapper.Option.SaveNullFields;
 import com.datastax.driver.mapping.annotations.Accessor;
 import com.datastax.driver.mapping.annotations.Computed;
 import com.google.common.base.Function;
+import com.google.common.base.Functions;
 import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.*;
@@ -46,6 +47,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 public class Mapper<T> {
 
     private static final Logger logger = LoggerFactory.getLogger(EntityMapper.class);
+    private static final Function<Object, Void> TO_NULL = Functions.constant(null);
 
     final MappingManager manager;
     final ProtocolVersion protocolVersion;
@@ -290,7 +292,7 @@ public class Mapper<T> {
      * @return a future on the completion of the save operation.
      */
     public ListenableFuture<Void> saveAsync(T entity) {
-        return submitSaveAsync(saveQueryAsync(entity, this.defaultSaveOptions));
+        return submitVoidQueryAsync(saveQueryAsync(entity, this.defaultSaveOptions));
     }
 
     /**
@@ -303,33 +305,17 @@ public class Mapper<T> {
      * @return a future on the completion of the save operation.
      */
     public ListenableFuture<Void> saveAsync(T entity, Option... options) {
-        return submitSaveAsync(saveQueryAsync(entity, toMapWithDefaults(options, this.defaultSaveOptions)));
+        return submitVoidQueryAsync(saveQueryAsync(entity, toMapWithDefaults(options, this.defaultSaveOptions)));
     }
 
-    private ListenableFuture<Void> submitSaveAsync(ListenableFuture<BoundStatement> bsFuture) {
-        final SettableFuture<Void> future = SettableFuture.create();
-        Futures.addCallback(bsFuture, new FutureCallback<BoundStatement>() {
+    private ListenableFuture<Void> submitVoidQueryAsync(ListenableFuture<BoundStatement> bsFuture) {
+        ListenableFuture<ResultSet> rsFuture = Futures.transform(bsFuture, new AsyncFunction<BoundStatement, ResultSet>() {
             @Override
-            public void onSuccess(BoundStatement result) {
-                Futures.addCallback(session().executeAsync(result), new FutureCallback<ResultSet>() {
-                    @Override
-                    public void onSuccess(ResultSet result) {
-                        future.set(null);
-                    }
-
-                    @Override
-                    public void onFailure(Throwable t) {
-                        future.setException(t);
-                    }
-                });
-            }
-
-            @Override
-            public void onFailure(Throwable t) {
-                future.setException(t);
+            public ListenableFuture<ResultSet> apply(BoundStatement bs) throws Exception {
+                return session().executeAsync(bs);
             }
         });
-        return future;
+        return Futures.transform(rsFuture, TO_NULL);
     }
 
     /**
@@ -447,29 +433,14 @@ public class Mapper<T> {
      *                                  at least one of those values is {@code null}.
      */
     public ListenableFuture<T> getAsync(final Object... objects) {
-        final SettableFuture<T> future = SettableFuture.create();
-        Futures.addCallback(getQueryAsync(objects), new FutureCallback<BoundStatement>() {
+        ListenableFuture<BoundStatement> bsFuture = getQueryAsync(objects);
+        ListenableFuture<ResultSet> rsFuture = Futures.transform(bsFuture, new AsyncFunction<BoundStatement, ResultSet>() {
             @Override
-            public void onSuccess(BoundStatement result) {
-                Futures.addCallback(Futures.transform(session().executeAsync(result), mapOneFunction), new FutureCallback<T>() {
-                    @Override
-                    public void onSuccess(T result) {
-                        future.set(result);
-                    }
-
-                    @Override
-                    public void onFailure(Throwable t) {
-                        future.setException(t);
-                    }
-                });
-            }
-
-            @Override
-            public void onFailure(Throwable t) {
-                future.setException(t);
+            public ListenableFuture<ResultSet> apply(BoundStatement bs) throws Exception {
+                return session().executeAsync(bs);
             }
         });
-        return future;
+        return Futures.transform(rsFuture, mapOneFunction);
     }
 
     /**
@@ -666,7 +637,7 @@ public class Mapper<T> {
      * @return a future on the completion of the deletion.
      */
     public ListenableFuture<Void> deleteAsync(T entity) {
-        return submitDeleteAsync(deleteQueryAsync(entity, defaultDeleteOptions));
+        return submitVoidQueryAsync(deleteQueryAsync(entity, defaultDeleteOptions));
     }
 
     /**
@@ -679,7 +650,7 @@ public class Mapper<T> {
      * @return a future on the completion of the deletion.
      */
     public ListenableFuture<Void> deleteAsync(T entity, Option... options) {
-        return submitDeleteAsync(deleteQueryAsync(entity, toMapWithDefaults(options, defaultDeleteOptions)));
+        return submitVoidQueryAsync(deleteQueryAsync(entity, toMapWithDefaults(options, defaultDeleteOptions)));
     }
 
     /**
@@ -717,33 +688,7 @@ public class Mapper<T> {
      *                                  at least one of those values is {@code null}.
      */
     public ListenableFuture<Void> deleteAsync(Object... objects) {
-        return submitDeleteAsync(deleteQueryAsync(objects));
-    }
-
-    private ListenableFuture<Void> submitDeleteAsync(ListenableFuture<BoundStatement> bsFuture) {
-        final SettableFuture<Void> future = SettableFuture.create();
-        Futures.addCallback(bsFuture, new FutureCallback<BoundStatement>() {
-            @Override
-            public void onSuccess(BoundStatement result) {
-                Futures.addCallback(session().executeAsync(result), new FutureCallback<ResultSet>() {
-                    @Override
-                    public void onSuccess(ResultSet result) {
-                        future.set(null);
-                    }
-
-                    @Override
-                    public void onFailure(Throwable t) {
-                        future.setException(t);
-                    }
-                });
-            }
-
-            @Override
-            public void onFailure(Throwable t) {
-                future.setException(t);
-            }
-        });
-        return future;
+        return submitVoidQueryAsync(deleteQueryAsync(objects));
     }
 
     /**
