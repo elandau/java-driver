@@ -75,7 +75,10 @@ class Native {
             libc = LibraryLoader.create(LibC.class).load("c");
             runtime = Runtime.getRuntime(libc);
         } catch (Throwable t) {
-            LOGGER.info("Could not load JNR LibC Library, native calls will not be available");
+            if (LOGGER.isDebugEnabled())
+                LOGGER.debug("Could not load JNR LibC Library, native calls will not be available", t);
+            else
+                LOGGER.info("Could not load JNR LibC Library, native calls will not be available (set this logger level to DEBUG to see the full stack trace)");
         }
         LIB_C = libc;
         LIB_C_RUNTIME = runtime;
