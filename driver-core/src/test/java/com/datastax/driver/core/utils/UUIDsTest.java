@@ -16,9 +16,7 @@
 package com.datastax.driver.core.utils;
 
 import com.datastax.driver.core.DataType;
-import com.datastax.driver.core.MemoryAppender;
 import com.datastax.driver.core.ProtocolVersion;
-import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 import org.testng.annotations.Test;
 
@@ -29,71 +27,12 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentSkipListSet;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
 public class UUIDsTest {
 
     private static final Logger logger = Logger.getLogger(UUIDs.class);
-
-    @Test(groups = "isolated")
-    public void should_obtain_pid_from_system_property() {
-        // If the com.datastax.driver.PID property is set, it should be used and this should be logged.
-        MemoryAppender appender = new MemoryAppender();
-        Level originalLevel = logger.getLevel();
-        try {
-            logger.setLevel(Level.INFO);
-            logger.addAppender(appender);
-            int pid = 8675;
-            System.setProperty(UUIDs.PID_SYSTEM_PROPERTY, "" + pid);
-            UUIDs.timeBased();
-            assertThat(appender.get())
-                    .containsOnlyOnce(String.format("PID obtained from System property %s: %d",
-                            UUIDs.PID_SYSTEM_PROPERTY, pid));
-        } finally {
-            logger.removeAppender(appender);
-            logger.setLevel(originalLevel);
-        }
-    }
-
-    @Test(groups = "isolated")
-    public void should_fallback_on_native_call_if_system_property_invalid() {
-        // If the com.datastax.driver.PID property is set, but is invalid, it should fallback onto native getpid().
-        MemoryAppender appender = new MemoryAppender();
-        Level originalLevel = logger.getLevel();
-        try {
-            logger.setLevel(Level.INFO);
-            logger.addAppender(appender);
-            String pid = "NOT_A_PID";
-            System.setProperty(UUIDs.PID_SYSTEM_PROPERTY, pid);
-            UUIDs.timeBased();
-            assertThat(appender.get())
-                    .containsOnlyOnce(String.format("Incorrect integer specified for PID in System property %s: %s",
-                            UUIDs.PID_SYSTEM_PROPERTY, pid))
-                    .containsOnlyOnce("PID obtained through native call to getpid()");
-        } finally {
-            logger.removeAppender(appender);
-            logger.setLevel(originalLevel);
-        }
-    }
-
-    @Test(groups = "isolated")
-    public void should_obtain_pid_through_native_call() {
-        // In the general case the JNR call should *just* work as most systems should support POSIX getpid.
-        MemoryAppender appender = new MemoryAppender();
-        Level originalLevel = logger.getLevel();
-        try {
-            logger.setLevel(Level.INFO);
-            logger.addAppender(appender);
-            UUIDs.timeBased();
-
-            assertThat(appender.get()).containsOnlyOnce("PID obtained through native call to getpid()");
-        } finally {
-            logger.removeAppender(appender);
-            logger.setLevel(originalLevel);
-        }
-    }
 
     @Test(groups = "unit")
     public void conformanceTest() {
