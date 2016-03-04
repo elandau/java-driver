@@ -31,7 +31,7 @@ import org.testng.annotations.Test;
 import javax.inject.Inject;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.GregorianCalendar;
+import java.util.UUID;
 
 import static com.datastax.driver.osgi.VersionProvider.projectVersion;
 import static org.ops4j.pax.exam.CoreOptions.*;
@@ -82,6 +82,11 @@ public class MailboxServiceIT {
                         systemProperty("cassandra.contactpoints").value(TestUtils.IP_PREFIX + 1),
                         bundle("reference:file:target/classes"),
                         mavenBundle("com.codahale.metrics", "metrics-core", "3.0.2"),
+                        mavenBundle("com.github.jnr", "jffi", "1.2.11"),
+                        mavenBundle("com.github.jnr", "jffi", "1.2.11").classifier("native").noStart(),
+                        mavenBundle("com.github.jnr", "jnr-ffi", "2.0.8"),
+                        mavenBundle("com.github.jnr", "jnr-x86asm", "1.0.3"),
+                        mavenBundle("org.ow2.asm", "asm", "5.0.4"),
                         mavenBundle("org.slf4j", "slf4j-api", "1.7.5"),
                         mavenBundle("org.slf4j", "slf4j-simple", "1.7.5").noStart(),
                         systemPackages("org.testng", "org.junit", "org.junit.runner", "org.junit.runner.manipulation",
@@ -178,9 +183,10 @@ public class MailboxServiceIT {
         try {
             Collection<MailboxMessage> inMessages = new ArrayList<MailboxMessage>();
             for (int i = 0; i < 30; i++) {
-                MailboxMessage message = new MailboxMessage(recipient, new GregorianCalendar(2015, 1, i).getTime(), recipient, "" + i);
+                MailboxMessage message = new MailboxMessage(recipient, recipient, "" + i);
+                UUID time = service.sendMessage(message);
+                message.setDate(time);
                 inMessages.add(message);
-                service.sendMessage(message);
             }
 
             Collection<MailboxMessage> messages = service.getMessages(recipient);
