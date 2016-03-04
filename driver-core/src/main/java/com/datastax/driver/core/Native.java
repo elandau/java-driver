@@ -21,10 +21,10 @@ import jnr.ffi.Runtime;
 import jnr.ffi.Struct;
 import jnr.ffi.annotations.Out;
 import jnr.ffi.annotations.Transient;
-import jnr.posix.POSIXFactory;
-import jnr.posix.util.DefaultPOSIXHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.lang.reflect.Method;
 
 /**
  * Helper class to deal with native system calls through the
@@ -144,10 +144,16 @@ public final class Native {
         private static final boolean GETPID_AVAILABLE;
 
         static {
-            jnr.posix.POSIX posix = null;
+            jnr.posix.POSIX posix;
             try {
-                posix = POSIXFactory.getPOSIX(new DefaultPOSIXHandler(), true);
+                // use reflection below to get the classloader a chance to load this class
+                Class<?> posixHandler = Class.forName("jnr.posix.POSIXHandler");
+                Class<?> defaultPosixHandler = Class.forName("jnr.posix.util.DefaultPOSIXHandler");
+                Class<?> posixFactory = Class.forName("jnr.posix.POSIXFactory");
+                Method getPOSIX = posixFactory.getMethod("getPOSIX", posixHandler, Boolean.TYPE);
+                posix = (jnr.posix.POSIX) getPOSIX.invoke(null, defaultPosixHandler.newInstance(), true);
             } catch (Throwable t) {
+                posix = null;
                 if (LOGGER.isDebugEnabled())
                     LOGGER.debug("Could not load JNR POSIX Library, native system calls through this library will not be available.", t);
                 else
