@@ -28,14 +28,6 @@ public final class InterceptableSessionImpl implements InterceptableSession {
     private final Session session;
     private final SessionChannel channel;
     
-    private static final SessionAction<String, PreparedStatement> ACTION_PREPARE_QUERY =
-        new SessionAction<String, PreparedStatement>() {
-            @Override
-            public ListenableFuture<PreparedStatement> send(final Session session, final String request) {
-                return session.prepareAsync(request);
-            }
-        };
-    
     private static final SessionAction<RegularStatement, PreparedStatement> ACTION_PREPARE_STATEMENT =
         new SessionAction<RegularStatement, PreparedStatement>() {
             @Override
@@ -44,30 +36,6 @@ public final class InterceptableSessionImpl implements InterceptableSession {
             }
         };
     
-    private static final SessionAction<String, ResultSet> ACITON_QUERY =
-        new SessionAction<String, ResultSet>() {
-            @Override
-            public ListenableFuture<ResultSet> send(final Session session, final String request) {
-                return session.executeAsync(request);
-            }
-        };
-
-    private static final SessionAction<QueryRequest, ResultSet> ACTION_QUERY_WITH_ARGS =
-        new SessionAction<QueryRequest, ResultSet>() {
-            @Override
-            public ListenableFuture<ResultSet> send(final Session session, final QueryRequest request) {
-                return session.executeAsync(request.query, request.args);
-            }
-        };
-
-    private static final SessionAction<QueryWithParameters, ResultSet> ACTION_QUERY_WITH_PARAMETERS =
-        new SessionAction<QueryWithParameters, ResultSet>() {
-            @Override
-            public ListenableFuture<ResultSet> send(final Session session, final QueryWithParameters request) {
-                return session.executeAsync(request.query, request.args);
-            }
-        };
-
     private static final SessionAction<Statement, ResultSet> ACTION_STATEMENT_QUERY =
         new SessionAction<Statement, ResultSet>() {
             @Override
@@ -76,26 +44,6 @@ public final class InterceptableSessionImpl implements InterceptableSession {
             }
         };
 
-    private static class QueryRequest {
-        final String query;
-        final Object[] args;
-        
-        public QueryRequest(String query, Object[] args) {
-            this.query = query;
-            this.args = args;
-        }
-    }
-    
-    private static class QueryWithParameters {
-        final String query;
-        final Map<String, Object> args;
-        
-        public QueryWithParameters(String query, Map<String, Object> args) {
-            this.query = query;
-            this.args = args;
-        }
-    }
-    
     public static InterceptableSessionImpl create(Session session) {
         return new InterceptableSessionImpl(session);
     }
@@ -159,18 +107,12 @@ public final class InterceptableSessionImpl implements InterceptableSession {
 
     @Override
     public ResultSetFuture executeAsync(final String query) {
-        SessionCall<String, ResultSet> call = channel.newCall(ACITON_QUERY);
-        SettableResultSetFutureCallback future = new SettableResultSetFutureCallback();
-        call.call(future, session, query);
-        return future;
+        return executeAsync(new SimpleStatement(query));
     }
 
     @Override
     public ResultSetFuture executeAsync(final String query, final Object... values) {
-        SessionCall<QueryRequest, ResultSet> call = channel.newCall(ACTION_QUERY_WITH_ARGS);
-        SettableResultSetFutureCallback future = new SettableResultSetFutureCallback();
-        call.call(future, session, new QueryRequest(query, values));
-        return future;
+        return executeAsync(new SimpleStatement(query, values));
     }
 
     @Override
@@ -192,10 +134,7 @@ public final class InterceptableSessionImpl implements InterceptableSession {
 
     @Override
     public ResultSetFuture executeAsync(String query, Map<String, Object> values) {
-        SessionCall<QueryWithParameters, ResultSet> call = channel.newCall(ACTION_QUERY_WITH_PARAMETERS);
-        SettableResultSetFutureCallback future = new SettableResultSetFutureCallback();
-        call.call(future, session, new QueryWithParameters(query, values));
-        return future;
+        return executeAsync(new SimpleStatement(query, values));
     }
 
     @Override
@@ -218,10 +157,7 @@ public final class InterceptableSessionImpl implements InterceptableSession {
 
     @Override
     public ListenableFuture<PreparedStatement> prepareAsync(String query) {
-        SessionCall<String, PreparedStatement> call = channel.newCall(ACTION_PREPARE_QUERY);
-        FutureCallbackToListenableFutureAdapter<PreparedStatement> future = new FutureCallbackToListenableFutureAdapter<PreparedStatement>();
-        call.call(future, session, query);
-        return future;
+        return prepareAsync(new SimpleStatement(query));
     }
 
     @Override
